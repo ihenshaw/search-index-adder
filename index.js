@@ -117,86 +117,99 @@ var addBatchToIndex = function (q, batch, batchOptions, indexerOptions, callback
 // Add this batch to the index respecting batch options and indexing
 // options
 var addBatch = function (batch, batchOptions, indexerOptions, callbackster) {
-  var dbInstructions = []
+  var batches = [];
 
-  batch.forEach(function (doc) {
-    // get database instructions for every doc. Instructions are keys
-    // that must be added for every doc
-    dbInstructions.push(getIndexEntries(doc, batchOptions, indexerOptions))
-  })
-  dbInstructions.push({
-    type: 'put',
-    key: 'DOCUMENT-COUNT',
-    value: batch.length
-  })
+  // split the batch up into bite-size batches.
+  while (batch.length > 0) {
+    batches.push(batch.splice(0, 200));
+  }
 
-  // dbInstructions contains lots of duplicate keys. Reduce the array
-  // so that all keys are unique
-  dbInstructions = _flatten(dbInstructions)
-  dbInstructions = _sortBy(dbInstructions, 'key')
-  dbInstructions = _reduce(dbInstructions, function (prev, item) {
-    if (item.key.substring(0, 6) === 'DELETE') {
-      prev.push(item)
-    } else if (item.key.substring(0, 8) === 'DOCUMENT') {
-      prev.push(item)
-    } else if (item.key.substring(0, 2) === 'TF') {
-      if (item.key === _last(prev).key) {
-        _last(prev).value.push(item.value[0])
-      } else {
-        prev.push(item)
-      }
-    } else if (item.key.substring(0, 2) === 'DF') {
-      if (item.key === _last(prev).key) {
-        _last(prev).value = _last(prev).value.concat(item.value)
-      } else {
-        prev.push(item)
-      }
-    }
-    return prev
-  }, [{key: '#', value: '#', type: '#'}])
+  async.eachSeries(batches, function(batch, callback) {
+    var dbInstructions = [];
 
-  async.eachSeries(
-    dbInstructions,
-    function (item, callback) {
-      indexerOptions.indexes.get(item.key, function (err, val) {
-        if (err) indexerOptions.log.info(err)
-        if (item.key.substring(0, 2) === 'DF') {
-          if (val) {
-            item.value = item.value.concat(val)
-          }
-          item.value = item.value.sort()
-        } else if (item.key.substring(0, 2) === 'TF') {
-          if (val) {
-            item.value = item.value.concat(val)
-          }
-          item.value = item.value.sort(function (a, b) {
-            // sort buy score and then ID, descending:
-            if (b[0] > a[0]) return 1
-            if (b[0] < a[0]) return -1
-            if (b[1] > a[1]) return 1
-            if (b[1] < a[1]) return -1
-            return 0
-          })
-        } else if (item.key === 'DOCUMENT-COUNT') {
-          if (val) {
-            item.value = +val + +(item.value)
-          }
-        }
-        return callback(null)
-      })
-    },
-    function (err) {
-      if (err) indexerOptions.log.info(err)
-      dbInstructions.push({key: 'LAST-UPDATE-TIMESTAMP', value: Date.now()})
-      indexerOptions.indexes.batch(dbInstructions, function (err) {
-        if (err) {
-          indexerOptions.log.info('Ooops!', err)
-        } else {
-          indexerOptions.log.info('batch indexed!')
-        }
-        return callbackster(null)
-      })
+    batch.forEach(function (doc) {
+      // get database instructions for every doc. Instructions are keys
+      // that must be added for every doc
+      var indexEntries = getIndexEntries(doc, batchOptions, indexerOptions);
+      indexEntries.unshift(dbInstructions.length, 0);
+      dbInstructions.splice.apply(dbInstructions, indexEntries);
     })
+    dbInstructions.push({
+      type: 'put',
+      key: 'DOCUMENT-COUNT',
+      value: batch.length
+    })
+
+    // dbInstructions contains lots of duplicate keys. Reduce the array
+    // so that all keys are unique
+    dbInstructions = _sortBy(dbInstructions, 'key')
+    dbInstructions = _reduce(dbInstructions, function (prev, item) {
+      if (item.key.substring(0, 6) === 'DELETE') {
+        prev.push(item)
+      } else if (item.key.substring(0, 8) === 'DOCUMENT') {
+        prev.push(item)
+      } else if (item.key.substring(0, 2) === 'TF') {
+        if (item.key === _last(prev).key) {
+          _last(prev).value.push(item.value[0])
+        } else {
+          prev.push(item)
+        }
+      } else if (item.key.substring(0, 2) === 'DF') {
+        if (item.key === _last(prev).key) {
+          _last(prev).value = _last(prev).value.concat(item.value)
+        } else {
+          prev.push(item)
+        }
+      }
+      return prev
+    }, [{key: '#', value: '#', type: '#'}])
+
+    async.eachSeries(
+        dbInstructions,
+        function (item, callback) {
+          indexerOptions.indexes.get(item.key, function (err, val) {
+            if (err) indexerOptions.log.info(err)
+            if (item.key.substring(0, 2) === 'DF') {
+              if (val) {
+                item.value = item.value.concat(val)
+              }
+              item.value = item.value.sort()
+            } else if (item.key.substring(0, 2) === 'TF') {
+              if (val) {
+                item.value = item.value.concat(val)
+              }
+              item.value = item.value.sort(function (a, b) {
+                // sort buy score and then ID, descending:
+                if (b[0] > a[0]) return 1
+                if (b[0] < a[0]) return -1
+                if (b[1] > a[1]) return 1
+                if (b[1] < a[1]) return -1
+                return 0
+              })
+            } else if (item.key === 'DOCUMENT-COUNT') {
+              if (val) {
+                item.value = +val + +(item.value)
+              }
+            }
+            return callback(null)
+          })
+        },
+        function (err) {
+          if (err) indexerOptions.log.info(err)
+          dbInstructions.push({key: 'LAST-UPDATE-TIMESTAMP', value: Date.now()})
+          indexerOptions.indexes.batch(dbInstructions, function (err) {
+            if (err) {
+              indexerOptions.log.info('Ooops!', err)
+            } else {
+              indexerOptions.log.info('batch indexed!')
+            }
+            return callback(null)
+          })
+        })
+
+  }, function() {
+    callbackster(null);
+  });
 }
 
 // get all index keys that this document will be added to

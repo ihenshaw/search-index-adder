@@ -202,7 +202,6 @@ var addBatch = function (batch, batchOptions, indexerOptions, callbackster) {
 // get all index keys that this document will be added to
 var getIndexEntries = function (doc, batchOptions, indexerOptions) {
   var docIndexEntries = []
-  doc = removeInvalidFields(doc, indexerOptions)
   indexerOptions.log.info('indexing ' + doc.id)
   var docToStore = {}
   var freqsForComposite = [] // put document frequencies in here
@@ -220,6 +219,13 @@ var getIndexEntries = function (doc, batchOptions, indexerOptions) {
 
     // store the field BEFORE mutating.
     if (fieldOptions.store) docToStore[fieldName] = field
+
+    // now the field will have been stored if configured to do so, we can skip the indexing for the field if it is:
+    //   a) null
+    //   b) not a string and not a number
+    if (skipField(doc, fieldName, indexerOptions)) {
+      return;
+    }
 
     if (Array.isArray(field)) field = field.join(' ') // make filter fields searchable
 
@@ -336,6 +342,22 @@ var removeInvalidFields = function (doc, indexerOptions) {
     }
   }
   return doc
+}
+
+function skipField(doc, fieldKey, indexerOptions) {
+  var value = doc[fieldKey];
+
+  if (value === null) {
+    indexerOptions.log.info(doc.id + ': ' + fieldKey + ' field is null, SKIPPING');
+    return true;
+  }
+
+  if (!(_isString(doc[fieldKey]) || _isNumber(doc[fieldKey]))) {
+    indexerOptions.log.info(doc.id + ': ' + fieldKey + ' field not string or array, SKIPPING');
+    return true;
+  }
+
+  return false;
 }
 
 // munge passed options into defaults options and return
